@@ -1,8 +1,9 @@
 # BoWW Server (Broadcast-On-Wakeword)
 
-A high-performance, hardware-aware audio streaming server designed for the Raspberry Pi (Zero 2 W / 4 / 5).
+Hardware-aware audio streaming server.
 
-This server manages audio ingestion from distributed clients via WebSockets, utilizing a sophisticated "Sidechain" DSP architecture. It decouples machine hearing (VAD) from human listening (Recording) to ensure high-precision detection without compromising the dynamic range of the collected dataset.
+This server manages audio ingestion from distributed clients via WebSockets.  
+It decouples machine hearing (VAD) from human listening (Recording) to ensure high-precision detection without compromising the dynamic range of the collected dataset.
 
 ## 🚀 Features
 
