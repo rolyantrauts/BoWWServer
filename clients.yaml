@@ -1,0 +1,14 @@
+groups:
+  - name: "bedroom"
+    sample_rate: 16000
+    channels: 1
+    arbitration_timeout_ms: 200
+    vad_no_voice_ms: 2000
+    output: "file"       # C++ expects string: "file" or "alsa"
+    device: ""           # Only used if output is "alsa" (e.g., "hw:0,0")
+
+clients:
+  - guid: "placeholder-guid"
+    group: "bedroom"
+    # Update this TempID to whatever the server prints in the log when you connect
+    onboard_temp_id: "temp-76931FAC"
