@@ -3,6 +3,7 @@ groups:
     sample_rate: 16000
     channels: 1
     arbitration_timeout_ms: 200
+    vad_threshold: 0.75
     vad_no_voice_ms: 2000
     output: "file"       # C++ expects string: "file" or "alsa"
     device: ""           # Only used if output is "alsa" (e.g., "hw:0,0")
