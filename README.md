@@ -106,3 +106,24 @@ Output: Written to disk (WAV) or Hardware Output (ALSA).
 Jitter Buffer: Smooths out network inconsistency before writing to disk.  
 
 VAD Logic: Maintains a "Speech State". If silence persists beyond vad_no_voice_ms (configurable), the server autonomously closes the file and terminates the stream.  
+
+```
+======================================================
+ BoWWServer - Edge Smart Speaker Master Node
+======================================================
+Description:
+  The BoWWServer coordinates multiple edge clients on the local
+  network. It handles 200ms network arbitration to seamlessly
+  determine the closest smart speaker, buffers incoming audio,
+  runs the Silero VAD engine to detect when the user stops
+  speaking, and outputs clean WAV files ready for STT pipelines.
+
+Usage: ./boww_server [OPTIONS]
+
+Options:
+  -c, --config   Path to config dir (default: ../)
+  -m, --model    Path to Silero VAD model (default: ../models/silero_vad.onnx)
+  -p, --port     WebSocket listener port (default: 9002)
+  -d, --debug    Enable Debug Mode (Live VAD probabilities and peak volume)
+  -h, --help     Show this help message and exit
+```
