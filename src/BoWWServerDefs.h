@@ -10,6 +10,8 @@ namespace boww {
 
     namespace Protocol {
         const std::string MSG_HELLO = "hello";           
+        const std::string MSG_ENROLL = "enroll";                 // <-- NEW
+        const std::string MSG_ASSIGN_TEMP_ID = "assign_temp_id"; // <-- NEW
         const std::string MSG_CONFIDENCE = "confidence"; 
         const std::string MSG_CONF_REC = "conf_rec";     
         const std::string MSG_START = "start";           
@@ -24,7 +26,7 @@ namespace boww {
         int sample_rate = DEFAULT_SAMPLE_RATE;
         int channels = DEFAULT_CHANNELS;
         bool use_agc = false; 
-        float vad_threshold = 0.5f; // <-- NEW: Default threshold is 0.5
+        float vad_threshold = 0.5f; 
         int arbitration_timeout_ms = 200;
         int vad_no_voice_ms = 1000;
         OutputType output_type = OutputType::FILE;
