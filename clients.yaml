@@ -9,7 +9,6 @@ groups:
     device: ""           # Only used if output is "alsa" (e.g., "hw:0,0")
 
 clients:
-  - guid: "placeholder-guid"
+  - guid: "871fb1f9-7ecf-426e-a5ce-a6ad67cfdd72"
     group: "bedroom"
     # Update this TempID to whatever the server prints in the log when you connect
-    onboard_temp_id: "temp-76931FAC"
