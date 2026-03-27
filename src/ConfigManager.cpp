@@ -50,12 +50,15 @@ namespace boww {
                     GroupConfig gc;
                     gc.name = node["name"].as<std::string>();
                     
-                    // --- NEW: Read Integer Configs ---
                     if (node["sample_rate"]) gc.sample_rate = node["sample_rate"].as<int>();
                     if (node["channels"]) gc.channels = node["channels"].as<int>();
+                    if (node["agc"]) gc.use_agc = node["agc"].as<bool>();
+                    
+                    // --- NEW: Parse the VAD Threshold ---
+                    if (node["vad_threshold"]) gc.vad_threshold = node["vad_threshold"].as<float>();
+                    
                     if (node["arbitration_timeout_ms"]) gc.arbitration_timeout_ms = node["arbitration_timeout_ms"].as<int>();
                     if (node["vad_no_voice_ms"]) gc.vad_no_voice_ms = node["vad_no_voice_ms"].as<int>();
-                    // ---------------------------------
 
                     if (node["output"]) {
                         std::string output = node["output"].as<std::string>();

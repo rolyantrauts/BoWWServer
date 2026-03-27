@@ -1,30 +1,97 @@
 #include "GroupController.h"
 #include <iostream>
-#include <vector>
+#include <chrono>
 #include <cmath>
-#include <iomanip>
-#include <algorithm> 
 
 namespace boww {
 
     GroupController::GroupController(GroupConfig config, VADEngine& vad_engine, bool debug_mode)
-        : config_(config), vad_engine_(vad_engine), audio_router_(config), debug_mode_(debug_mode) 
+        : config_(std::move(config)), vad_engine_(vad_engine), debug_mode_(debug_mode), router_(config_) 
     {
-        std::cout << "[Group: " << config.name << "] Initialized." << std::endl;
-        alsa_accumulator_.reserve(JITTER_TARGET * 2);
+        std::cout << "[Group: " << config_.name << "] Initialized with VAD Threshold: " << config_.vad_threshold << "\n";
     }
 
-    void GroupController::HandleConfidenceScore(std::shared_ptr<ClientSession> session, float score) {
+    GroupController::~GroupController() {
+        if (state_ == GroupState::STREAMING) {
+            router_.CloseStream();
+        }
+    }
+
+    void GroupController::HandleConfidenceScore(std::shared_ptr<ClientSession> client, float score) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (state_ == GroupState::LOCKED) return;
-
-        candidates_[session->GetID()] = {score, session};
-        std::cout << "[Group: " << config_.name << "] Candidate: " << session->GetID() << " Score: " << score << std::endl;
-
+        
         if (state_ == GroupState::IDLE) {
             state_ = GroupState::ARBITRATING;
             arbitration_start_time_ = std::chrono::steady_clock::now();
-            std::cout << "[Group: " << config_.name << "] Arbitration started." << std::endl;
+            
+            best_candidate_ = client;
+            best_score_ = score;
+            
+            current_candidates_.clear();
+            arbitration_buffers_.clear();
+            current_candidates_.push_back(client);
+            
+            std::cout << "[Group: " << config_.name << "] Candidate: " << client->GetID() << " Score: " << score << "\n";
+            std::cout << "[Group: " << config_.name << "] Arbitration started.\n";
+            
+        } else if (state_ == GroupState::ARBITRATING) {
+            std::cout << "[Group: " << config_.name << "] Candidate: " << client->GetID() << " Score: " << score << "\n";
+            current_candidates_.push_back(client);
+            
+            if (score > best_score_) {
+                best_candidate_ = client;
+                best_score_ = score;
+            }
+        }
+    }
+
+    void GroupController::HandleAudioStream(std::shared_ptr<ClientSession> client, std::vector<int16_t>& pcm_data) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        if (state_ == GroupState::ARBITRATING) {
+            auto& buffer = arbitration_buffers_[client->GetID()];
+            buffer.insert(buffer.end(), pcm_data.begin(), pcm_data.end());
+            return; 
+        }
+
+        if (state_ != GroupState::STREAMING || active_client_guid_ != client->GetID()) {
+            return; 
+        }
+
+        // 1. DC Offset Removal (Mean Subtraction)
+        int64_t sum = 0;
+        for (int16_t sample : pcm_data) sum += sample;
+        int16_t mean = static_cast<int16_t>(sum / static_cast<int64_t>(pcm_data.size()));
+        for (size_t i = 0; i < pcm_data.size(); ++i) {
+            pcm_data[i] = static_cast<int16_t>(pcm_data[i] - mean);
+        }
+
+        if (config_.use_agc) {
+            agc_engine_.Process(pcm_data);
+        }
+
+        router_.WriteChunk(pcm_data);
+
+        // 2. VAD Inference
+        float raw_prob = vad_engine_.Process(client->GetVADState(), pcm_data);
+        
+        // 3. Exponential Moving Average (EMA)
+        auto state = client->GetVADState();
+        state->smoothed_prob = (0.8f * state->smoothed_prob) + (0.2f * raw_prob);
+
+        if (debug_mode_) {
+            int16_t peak = 0;
+            for (auto sample : pcm_data) {
+                if (std::abs(sample) > peak) peak = std::abs(sample);
+            }
+            std::cout << "[VAD] Raw: " << raw_prob 
+                      << " | Smoothed: " << state->smoothed_prob 
+                      << " | Peak Amp: " << peak << "\n";
+        }
+
+        // 4. Configurable Threshold Check
+        if (state->smoothed_prob > config_.vad_threshold) { 
+            client->UpdateLastVoiceTime();
         }
     }
 
@@ -33,121 +100,72 @@ namespace boww {
         auto now = std::chrono::steady_clock::now();
 
         if (state_ == GroupState::ARBITRATING) {
-            long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - arbitration_start_time_).count();
-            if (elapsed >= config_.arbitration_timeout_ms) ResolveArbitration();
-        }
-        else if (state_ == GroupState::LOCKED) {
-            if (!active_streamer_) { ResetGroup(); return; }
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - arbitration_start_time_).count();
+            
+            if (elapsed >= config_.arbitration_timeout_ms) {
+                if (best_candidate_) {
+                    active_client_guid_ = best_candidate_->GetID();
+                    state_ = GroupState::STREAMING;
+                    
+                    std::cout << "[Group: " << config_.name << "] Winner: " << active_client_guid_ << "\n";
+                    
+                    best_candidate_->InitVADState(vad_engine_.CreateSessionState());
+                    router_.OpenStream(active_client_guid_);
+                    
+                    if (arbitration_buffers_.count(active_client_guid_)) {
+                        auto& pre_roll = arbitration_buffers_[active_client_guid_];
+                        if (!pre_roll.empty()) {
+                            
+                            // 1. DC Offset on Pre-roll
+                            int64_t sum = 0;
+                            for (int16_t sample : pre_roll) sum += sample;
+                            int16_t mean = static_cast<int16_t>(sum / static_cast<int64_t>(pre_roll.size()));
+                            for (size_t i = 0; i < pre_roll.size(); ++i) pre_roll[i] = static_cast<int16_t>(pre_roll[i] - mean);
 
-            long silence_duration = active_streamer_->GetTimeSinceLastVoiceMs();
-            if (silence_duration > config_.vad_no_voice_ms) {
-                std::cout << "[Group: " << config_.name << "] VAD Timeout (" << silence_duration << "ms). Stopping." << std::endl;
-                
-                active_streamer_->SendStopSignal();
-                for (auto const& [guid, candidate] : candidates_) {
-                    if (auto s = candidate.session.lock()) {
-                         if (s != active_streamer_) s->SendStopSignal();
+                            if (config_.use_agc) agc_engine_.Process(pre_roll);
+                            router_.WriteChunk(pre_roll);
+                            
+                            // 2. VAD & EMA on Pre-roll
+                            float raw_prob = vad_engine_.Process(best_candidate_->GetVADState(), pre_roll);
+                            auto state = best_candidate_->GetVADState();
+                            state->smoothed_prob = (0.8f * state->smoothed_prob) + (0.2f * raw_prob);
+                            
+                            if (state->smoothed_prob > config_.vad_threshold) {
+                                best_candidate_->UpdateLastVoiceTime();
+                            }
+                        }
                     }
-                }
-                ResetGroup();
-            }
-        }
-    }
-
-    void GroupController::ResolveArbitration() {
-        float best_score = -1.0f;
-        std::shared_ptr<ClientSession> winner = nullptr;
-
-        for (auto it = candidates_.begin(); it != candidates_.end();) {
-            if (auto s = it->second.session.lock()) {
-                if (it->second.score > best_score) {
-                    best_score = it->second.score;
-                    winner = s;
-                }
-                ++it;
-            } else { it = candidates_.erase(it); }
-        }
-
-        if (winner) {
-            std::cout << "[Group: " << config_.name << "] Winner: " << winner->GetID() << std::endl;
-            state_ = GroupState::LOCKED;
-            active_streamer_ = winner;
-            
-            ingest_buffer_.clear();
-            alsa_accumulator_.clear();
-
-            winner->InitVADState(vad_engine_.CreateSessionState());
-            audio_router_.OpenStream(winner->GetID());
-
-            for (auto const& [guid, candidate] : candidates_) {
-                if (auto s = candidate.session.lock()) {
-                    if (s != winner) s->SendStopSignal();
+                    
+                    arbitration_buffers_.clear(); 
+                    best_candidate_->SendStartSignal(); 
+                    
+                    for (auto& candidate : current_candidates_) {
+                        if (candidate->GetID() != active_client_guid_) {
+                            candidate->SendStopSignal();
+                        }
+                    }
+                    current_candidates_.clear();
+                    
+                } else {
+                    state_ = GroupState::IDLE; 
                 }
             }
-        } else {
-            ResetGroup();
-        }
-    }
-
-    void GroupController::ResetGroup() {
-        state_ = GroupState::IDLE;
-        candidates_.clear();
-        active_streamer_ = nullptr;
-        audio_router_.CloseStream();
-        ingest_buffer_.clear();
-        alsa_accumulator_.clear();
-    }
-
-    void GroupController::HandleAudioStream(std::shared_ptr<ClientSession> session, const std::vector<int16_t>& pcm_data) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        if (state_ != GroupState::LOCKED || session != active_streamer_) return;
-
-        // --- STAGE 1: INGEST (RAW) ---
-        for (int16_t sample : pcm_data) {
-            ingest_buffer_.push_back(sample);
-        }
-
-        // --- STAGE 2: PROCESS ---
-        static std::vector<int16_t> raw_chunk(VAD_CHUNK_SIZE);
-        static std::vector<int16_t> agc_chunk(VAD_CHUNK_SIZE);
-        static int debug_counter = 0; 
-
-        while (ingest_buffer_.size() >= VAD_CHUNK_SIZE) {
-            // 2a. Split Path
-            for (size_t i = 0; i < VAD_CHUNK_SIZE; ++i) {
-                int16_t val = ingest_buffer_.front();
-                raw_chunk[i] = val; // Path A: Output
-                agc_chunk[i] = val; // Path B: Detection
-                ingest_buffer_.pop_front();
+        } 
+        else if (state_ == GroupState::STREAMING) {
+            if (best_candidate_) {
+                long silence_ms = best_candidate_->GetTimeSinceLastVoiceMs();
+                
+                if (silence_ms >= config_.vad_no_voice_ms) {
+                    std::cout << "[Group: " << config_.name << "] VAD Timeout (" << silence_ms << "ms). Stopping.\n";
+                    
+                    router_.CloseStream();
+                    best_candidate_->SendStopSignal();
+                    
+                    state_ = GroupState::IDLE;
+                    active_client_guid_ = "";
+                    best_candidate_ = nullptr;
+                }
             }
-
-            // 2b. Path B: AGC + VAD
-            agc_.Process(agc_chunk);
-            float voice_prob = vad_engine_.Process(active_streamer_->GetVADState(), agc_chunk);
-            
-            if (debug_mode_ && ++debug_counter % 10 == 0) {
-               int16_t debug_amp = 0;
-               for(auto s : agc_chunk) if(std::abs(s) > debug_amp) debug_amp = std::abs(s);
-               std::cout << "[VAD] Prob: " << std::fixed << std::setprecision(2) << voice_prob 
-                         << " | Sidechain Amp: " << debug_amp 
-                         << " | Gain: " << std::setprecision(1) << agc_.GetCurrentGain() << "x" << std::endl;
-            }
-
-            if (voice_prob > 0.5f) {
-                active_streamer_->UpdateLastVoiceTime();
-            }
-
-            // 2c. Path A: Output (Attenuated Raw)
-            for (int16_t raw_sample : raw_chunk) {
-                alsa_accumulator_.push_back(static_cast<int16_t>(raw_sample * 0.4f));
-            }
-        }
-
-        // --- STAGE 3: WRITE ---
-        if (alsa_accumulator_.size() >= JITTER_TARGET) {
-            audio_router_.WriteChunk(alsa_accumulator_);
-            alsa_accumulator_.clear();
         }
     }
 }

@@ -1,39 +1,38 @@
 #include "ClientSession.h"
-#include "BoWWServer.h"
-#include <iostream>
+#include "BoWWServer.h" 
 #include <chrono>
 
 namespace boww {
 
-    ClientSession::ClientSession(websocketpp::connection_hdl connection_handle, BoWWServer* server)
-        : connection_handle_(connection_handle), server_context_(server) 
-    {
+    ClientSession::ClientSession(websocketpp::connection_hdl hdl, BoWWServer* server)
+        : hdl_(hdl), server_(server) {
         last_voice_ts_ = std::chrono::steady_clock::now();
     }
 
     void ClientSession::AssignTempID(const std::string& temp_id) {
         temp_id_ = temp_id;
-        guid_ = "";
-        group_name_ = "";
     }
 
     void ClientSession::SetGUID(const std::string& guid, const std::string& group) {
         guid_ = guid;
-        group_name_ = group;
-        temp_id_ = ""; 
-        std::cout << "[Session] Authenticated GUID: " << guid << " in Group: " << group << std::endl;
+        group_ = group;
+        authenticated_ = true;
     }
 
     std::string ClientSession::GetID() const {
-        return guid_.empty() ? temp_id_ : guid_;
-    }
-
-    bool ClientSession::IsAuthenticated() const {
-        return !guid_.empty();
+        return authenticated_ ? guid_ : temp_id_;
     }
 
     std::string ClientSession::GetGroup() const {
-        return group_name_;
+        return group_;
+    }
+
+    bool ClientSession::IsAuthenticated() const {
+        return authenticated_;
+    }
+
+    websocketpp::connection_hdl ClientSession::GetHandle() const {
+        return hdl_;
     }
 
     void ClientSession::InitVADState(std::shared_ptr<VADSessionState> state) {
@@ -41,7 +40,7 @@ namespace boww {
         UpdateLastVoiceTime();
     }
 
-    std::shared_ptr<VADSessionState> ClientSession::GetVADState() {
+    std::shared_ptr<VADSessionState> ClientSession::GetVADState() const {
         return vad_state_;
     }
 
@@ -49,21 +48,21 @@ namespace boww {
         last_voice_ts_ = std::chrono::steady_clock::now();
     }
 
-    long ClientSession::GetTimeSinceLastVoiceMs() {
+    long ClientSession::GetTimeSinceLastVoiceMs() const {
         auto now = std::chrono::steady_clock::now();
-        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_voice_ts_);
-        return static_cast<long>(diff.count());
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now - last_voice_ts_).count();
     }
 
-    void ClientSession::SendJSON(const nlohmann::json& j) {
-        if (server_context_) {
-            server_context_->SendJSON(connection_handle_, j);
+    // --- ADD THIS FUNCTION ---
+    void ClientSession::SendStartSignal() {
+        if (server_) {
+            server_->SendJSON(hdl_, {{"type", Protocol::MSG_START}});
         }
     }
 
     void ClientSession::SendStopSignal() {
-        nlohmann::json j;
-        j["type"] = Protocol::MSG_STOP;
-        SendJSON(j);
+        if (server_) {
+            server_->SendJSON(hdl_, {{"type", Protocol::MSG_STOP}});
+        }
     }
 }

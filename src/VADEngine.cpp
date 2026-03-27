@@ -28,64 +28,57 @@ namespace boww {
 
     std::shared_ptr<VADSessionState> VADEngine::CreateSessionState() {
         auto s = std::make_shared<VADSessionState>();
-        // Initialize State: 2 * 1 * 128 (Silero V5)
         s->state.resize(256, 0.0f);
-        // Initialize SR: 16000
         s->sr.push_back(16000);
+        s->audio_buffer.clear();
+        s->last_prob = 0.0f;
+        s->smoothed_prob = 0.0f; // <-- NEW: Start at zero
         return s;
     }
 
     float VADEngine::Process(std::shared_ptr<VADSessionState> state_ptr, const std::vector<int16_t>& pcm_data) {
         if (!session_ || !state_ptr) return 0.0f;
 
-        // 1. Prepare Input (Normalize Int16 -> Float32)
-        // Silero expects flat float array
-        size_t input_len = pcm_data.size();
-        std::vector<float> input_tensor(input_len);
-        for (size_t i = 0; i < input_len; ++i) {
-            input_tensor[i] = static_cast<float>(pcm_data[i]) / 32768.0f;
+        for (auto sample : pcm_data) {
+            state_ptr->audio_buffer.push_back(static_cast<float>(sample) / 32768.0f);
         }
 
-        // 2. Define Shapes
-        // Input: [1, N]
-        std::vector<int64_t> input_shape = {1, static_cast<int64_t>(input_len)};
-        // State: [2, 1, 128]
-        std::vector<int64_t> state_shape = {2, 1, 128};
-        // SR: [1]
-        std::vector<int64_t> sr_shape = {1};
+        const size_t SILERO_CHUNK_SIZE = 512;
+        
+        while (state_ptr->audio_buffer.size() >= SILERO_CHUNK_SIZE) {
+            std::vector<float> input_tensor(state_ptr->audio_buffer.begin(), state_ptr->audio_buffer.begin() + SILERO_CHUNK_SIZE);
+            state_ptr->audio_buffer.erase(state_ptr->audio_buffer.begin(), state_ptr->audio_buffer.begin() + SILERO_CHUNK_SIZE);
 
-        // 3. Create ORT Tensors
-        std::vector<Ort::Value> input_tensors;
-        input_tensors.push_back(Ort::Value::CreateTensor<float>(memory_info_, input_tensor.data(), input_tensor.size(), input_shape.data(), input_shape.size()));
-        input_tensors.push_back(Ort::Value::CreateTensor<float>(memory_info_, state_ptr->state.data(), state_ptr->state.size(), state_shape.data(), state_shape.size()));
-        input_tensors.push_back(Ort::Value::CreateTensor<int64_t>(memory_info_, state_ptr->sr.data(), state_ptr->sr.size(), sr_shape.data(), sr_shape.size()));
+            std::vector<int64_t> input_shape = {1, static_cast<int64_t>(SILERO_CHUNK_SIZE)};
+            std::vector<int64_t> state_shape = {2, 1, 128};
+            std::vector<int64_t> sr_shape = {1};
 
-        // 4. Run Inference
-        const char* input_names[] = {"input", "state", "sr"};
-        const char* output_names[] = {"output", "stateN"};
+            std::vector<Ort::Value> input_tensors;
+            input_tensors.push_back(Ort::Value::CreateTensor<float>(memory_info_, input_tensor.data(), input_tensor.size(), input_shape.data(), input_shape.size()));
+            input_tensors.push_back(Ort::Value::CreateTensor<float>(memory_info_, state_ptr->state.data(), state_ptr->state.size(), state_shape.data(), state_shape.size()));
+            input_tensors.push_back(Ort::Value::CreateTensor<int64_t>(memory_info_, state_ptr->sr.data(), state_ptr->sr.size(), sr_shape.data(), sr_shape.size()));
 
-        try {
-            auto output_tensors = session_->Run(
-                Ort::RunOptions{nullptr}, 
-                input_names, input_tensors.data(), 3, 
-                output_names, 2
-            );
+            const char* input_names[] = {"input", "state", "sr"};
+            const char* output_names[] = {"output", "stateN"};
 
-            // 5. Update State (stateN -> state)
-            float* new_state_data = output_tensors[1].GetTensorMutableData<float>();
-            std::memcpy(state_ptr->state.data(), new_state_data, state_ptr->state.size() * sizeof(float));
+            try {
+                auto output_tensors = session_->Run(
+                    Ort::RunOptions{nullptr}, 
+                    input_names, input_tensors.data(), 3, 
+                    output_names, 2
+                );
 
-            // 6. Get Probability (output is [1, 2], we want output[0][1] for speech)
-            // But V5 output shape is [1, N] actually containing probabilities?
-            // Actually V5 standard: output is [1, 1] prob? No, usually [1, batch].
-            // Let's assume standard Silero [1, 1] output for prob.
-            
-            float* output_data = output_tensors[0].GetTensorMutableData<float>();
-            return output_data[0]; 
+                float* new_state_data = output_tensors[1].GetTensorMutableData<float>();
+                std::memcpy(state_ptr->state.data(), new_state_data, state_ptr->state.size() * sizeof(float));
 
-        } catch (const std::exception& e) {
-            if (debug_) std::cerr << "[VAD] Run Error: " << e.what() << std::endl;
-            return 0.0f;
+                float* output_data = output_tensors[0].GetTensorMutableData<float>();
+                state_ptr->last_prob = output_data[0]; 
+
+            } catch (const std::exception& e) {
+                if (debug_) std::cerr << "[VAD] Run Error: " << e.what() << std::endl;
+            }
         }
+
+        return state_ptr->last_prob;
     }
 }
