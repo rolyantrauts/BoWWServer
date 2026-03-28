@@ -33,6 +33,8 @@ chmod +x setup_env_pi.sh
 
 python3 setup_resources.py
 
+./boww_server -c ./ -m ./models/silero_vad.onnx -d
+
 # This places silero_vad.onnx into the models/ directory.
 ```
 🏗️ Build Instructions  
