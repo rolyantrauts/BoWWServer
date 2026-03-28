@@ -5,7 +5,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # --- Sources ---
-# Explicitly listing sources ensures CMake knows exactly what to compile
 set(SOURCES
     src/main.cpp
     src/BoWWServer.cpp
@@ -18,12 +17,14 @@ set(SOURCES
     src/VADEngine.h
     src/ConfigManager.cpp
     src/ConfigManager.h
-    src/AudioOutputRouter.cpp
-    src/AudioOutputRouter.h
     src/MDNSService.cpp
     src/MDNSService.h
     src/BoWWServerDefs.h
-    src/SimpleAGC.h  # <--- Ensure this is included
+    src/SimpleAGC.h  
+    src/WavWriter.cpp 
+    src/WavWriter.h   
+    src/AlsaSinkManager.cpp 
+    src/AlsaSinkManager.h   
 )
 
 # --- 1. Threading & Boost ---
@@ -38,7 +39,6 @@ if(ALSA_FOUND)
 endif()
 
 # --- 3. Avahi (mDNS) - Manual Search ---
-# Bypassing pkg-config because it failed on your Pi previously
 find_path(AVAHI_CLIENT_INCLUDE_DIR avahi-client/client.h)
 find_path(AVAHI_COMMON_INCLUDE_DIR avahi-common/watch.h)
 find_library(AVAHI_CLIENT_LIB avahi-client)
@@ -60,11 +60,8 @@ pkg_check_modules(YAMLCPP REQUIRED yaml-cpp)
 find_package(nlohmann_json REQUIRED)
 
 # --- 6. ONNX Runtime (Local Libs) ---
-# We look in the 'libs' folder created by your setup script
 set(ONNX_ROOT "${CMAKE_SOURCE_DIR}/libs/onnxruntime")
 set(ONNX_INCLUDE_DIR "${ONNX_ROOT}/include")
-# The lib name might be libonnxruntime.so or libonnxruntime.so.1.16.3
-# We search specifically for the .so file
 file(GLOB ONNX_LIB "${ONNX_ROOT}/lib/libonnxruntime.so*")
 
 if(NOT EXISTS "${ONNX_ROOT}/include/onnxruntime_cxx_api.h")
@@ -98,7 +95,6 @@ target_link_libraries(boww_server PRIVATE
 )
 
 # --- Post-Build: Copy ONNX Lib ---
-# This ensures the .so file is next to the executable so it runs without setting LD_LIBRARY_PATH
 add_custom_command(TARGET boww_server POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${ONNX_ROOT}/lib

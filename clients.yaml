@@ -1,3 +1,7 @@
+server:
+  temp_dir: "/tmp/boww/"
+  dest_dir: "./output/"
+
 groups:
   - name: "bedroom"
     sample_rate: 16000
@@ -5,10 +9,10 @@ groups:
     arbitration_timeout_ms: 200
     vad_threshold: 0.75
     vad_no_voice_ms: 2000
-    output: "file"       # C++ expects string: "file" or "alsa"
-    device: ""           # Only used if output is "alsa" (e.g., "hw:0,0")
+    preroll_seconds: 2.0
+    output: "alsa"       
+    device: "plughw:0,0" 
 
 clients:
   - guid: "871fb1f9-7ecf-426e-a5ce-a6ad67cfdd72"
     group: "bedroom"
-    # Update this TempID to whatever the server prints in the log when you connect
