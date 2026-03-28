@@ -15,9 +15,12 @@ namespace boww {
         std::function<void(GroupConfig new_config)> OnGroupConfigChanged;
 
         bool IsGUIDValid(const std::string& guid, ClientInfo& out_info);
+        
+        ServerConfig GetServerConfig() const { return server_config_; }
 
     private:
         std::string config_path_;
+        ServerConfig server_config_;
         std::map<std::string, GroupConfig> groups_;
         std::map<std::string, ClientInfo> valid_clients_;
         

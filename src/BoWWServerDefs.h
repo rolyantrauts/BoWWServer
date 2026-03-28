@@ -10,8 +10,9 @@ namespace boww {
 
     namespace Protocol {
         const std::string MSG_HELLO = "hello";           
-        const std::string MSG_ENROLL = "enroll";                 // <-- NEW
-        const std::string MSG_ASSIGN_TEMP_ID = "assign_temp_id"; // <-- NEW
+        const std::string MSG_HELLO_ACK = "hello_ack"; // <-- NEW
+        const std::string MSG_ENROLL = "enroll";                 
+        const std::string MSG_ASSIGN_TEMP_ID = "assign_temp_id"; 
         const std::string MSG_CONFIDENCE = "confidence"; 
         const std::string MSG_CONF_REC = "conf_rec";     
         const std::string MSG_START = "start";           
@@ -21,6 +22,11 @@ namespace boww {
 
     enum class OutputType { ALSA, FILE };
 
+    struct ServerConfig {
+        std::string temp_dir = "/tmp/boww/";
+        std::string dest_dir = "./output/";
+    };
+
     struct GroupConfig {
         std::string name;
         int sample_rate = DEFAULT_SAMPLE_RATE;
@@ -29,6 +35,7 @@ namespace boww {
         float vad_threshold = 0.5f; 
         int arbitration_timeout_ms = 200;
         int vad_no_voice_ms = 1000;
+        float preroll_seconds = 2.0f; // <-- NEW
         OutputType output_type = OutputType::FILE;
         std::string output_target; 
         bool fallback_to_file_on_busy = true;

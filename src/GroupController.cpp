@@ -2,18 +2,23 @@
 #include <iostream>
 #include <chrono>
 #include <cmath>
+#include <ctime>
+#include <sstream>
 
 namespace boww {
 
-    GroupController::GroupController(GroupConfig config, VADEngine& vad_engine, bool debug_mode)
-        : config_(std::move(config)), vad_engine_(vad_engine), debug_mode_(debug_mode), router_(config_) 
+    GroupController::GroupController(GroupConfig config, VADEngine& vad_engine, ServerConfig server_config, AlsaSinkManager& alsa_manager, bool debug_mode)
+        : config_(std::move(config)), vad_engine_(vad_engine), server_config_(server_config), alsa_manager_(alsa_manager), debug_mode_(debug_mode) 
     {
         std::cout << "[Group: " << config_.name << "] Initialized with VAD Threshold: " << config_.vad_threshold << "\n";
     }
 
     GroupController::~GroupController() {
         if (state_ == GroupState::STREAMING) {
-            router_.CloseStream();
+            wav_writer_.CloseAndPublish();
+            if (is_live_streaming_) {
+                alsa_manager_.CloseLiveStream(config_.output_target);
+            }
         }
     }
 
@@ -58,7 +63,6 @@ namespace boww {
             return; 
         }
 
-        // 1. DC Offset Removal (Mean Subtraction)
         int64_t sum = 0;
         for (int16_t sample : pcm_data) sum += sample;
         int16_t mean = static_cast<int16_t>(sum / static_cast<int64_t>(pcm_data.size()));
@@ -70,12 +74,12 @@ namespace boww {
             agc_engine_.Process(pcm_data);
         }
 
-        router_.WriteChunk(pcm_data);
+        wav_writer_.Write(pcm_data);
+        if (is_live_streaming_) {
+            alsa_manager_.WriteLiveStream(config_.output_target, pcm_data);
+        }
 
-        // 2. VAD Inference
         float raw_prob = vad_engine_.Process(client->GetVADState(), pcm_data);
-        
-        // 3. Exponential Moving Average (EMA)
         auto state = client->GetVADState();
         state->smoothed_prob = (0.8f * state->smoothed_prob) + (0.2f * raw_prob);
 
@@ -84,12 +88,9 @@ namespace boww {
             for (auto sample : pcm_data) {
                 if (std::abs(sample) > peak) peak = std::abs(sample);
             }
-            std::cout << "[VAD] Raw: " << raw_prob 
-                      << " | Smoothed: " << state->smoothed_prob 
-                      << " | Peak Amp: " << peak << "\n";
+            std::cout << "[VAD] Raw: " << raw_prob << " | Smoothed: " << state->smoothed_prob << " | Peak Amp: " << peak << "\n";
         }
 
-        // 4. Configurable Threshold Check
         if (state->smoothed_prob > config_.vad_threshold) { 
             client->UpdateLastVoiceTime();
         }
@@ -110,32 +111,61 @@ namespace boww {
                     std::cout << "[Group: " << config_.name << "] Winner: " << active_client_guid_ << "\n";
                     
                     best_candidate_->InitVADState(vad_engine_.CreateSessionState());
-                    router_.OpenStream(active_client_guid_);
                     
+                    auto in_time_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    
+                    std::stringstream ss;
+                    ss << config_.name << "_" << active_client_guid_ << "_" << in_time_t;
+                    current_base_filename_ = ss.str();
+
+                    std::string temp_wav = server_config_.temp_dir + current_base_filename_ + ".wav";
+                    std::string dest_wav = server_config_.dest_dir + current_base_filename_ + ".wav";
+                    std::string dest_json = server_config_.dest_dir + current_base_filename_ + ".json";
+
+                    current_metadata_["group"] = config_.name;
+                    current_metadata_["guid"] = active_client_guid_;
+                    current_metadata_["timestamp"] = in_time_t;
+                    current_metadata_["file"] = current_base_filename_ + ".wav";
+                    current_metadata_["output_mode"] = (config_.output_type == OutputType::ALSA) ? "alsa" : "file";
+                    if (config_.output_type == OutputType::ALSA) {
+                        current_metadata_["device"] = config_.output_target;
+                    }
+                    current_metadata_["played_from_queue"] = false;
+
+                    wav_writer_.Open(temp_wav, dest_wav, dest_json, current_metadata_, config_.sample_rate, config_.channels);
+
+                    is_live_streaming_ = false;
+                    if (config_.output_type == OutputType::ALSA) {
+                        is_live_streaming_ = alsa_manager_.RequestLiveStream(config_.output_target);
+                        if (!is_live_streaming_) {
+                            std::cout << "[Group: " << config_.name << "] ALSA Device " << config_.output_target << " is BUSY! Falling back to queue.\n";
+                        }
+                    }
+
+                    // Process Pre-roll Buffer
                     if (arbitration_buffers_.count(active_client_guid_)) {
                         auto& pre_roll = arbitration_buffers_[active_client_guid_];
                         if (!pre_roll.empty()) {
                             
-                            // 1. DC Offset on Pre-roll
                             int64_t sum = 0;
                             for (int16_t sample : pre_roll) sum += sample;
                             int16_t mean = static_cast<int16_t>(sum / static_cast<int64_t>(pre_roll.size()));
                             for (size_t i = 0; i < pre_roll.size(); ++i) pre_roll[i] = static_cast<int16_t>(pre_roll[i] - mean);
 
                             if (config_.use_agc) agc_engine_.Process(pre_roll);
-                            router_.WriteChunk(pre_roll);
                             
-                            // 2. VAD & EMA on Pre-roll
-                            float raw_prob = vad_engine_.Process(best_candidate_->GetVADState(), pre_roll);
-                            auto state = best_candidate_->GetVADState();
-                            state->smoothed_prob = (0.8f * state->smoothed_prob) + (0.2f * raw_prob);
+                            wav_writer_.Write(pre_roll);
+                            if (is_live_streaming_) alsa_manager_.WriteLiveStream(config_.output_target, pre_roll);
                             
-                            if (state->smoothed_prob > config_.vad_threshold) {
-                                best_candidate_->UpdateLastVoiceTime();
-                            }
+                            // 1. Warm-up VAD internal memory on the pre-roll (ignoring its raw output probability)
+                            vad_engine_.Process(best_candidate_->GetVADState(), pre_roll);
                         }
                     }
                     
+                    // 2. THE WAKE WORD JUST FIRED: Force VAD state to 1.0 (Voice Detected) to give momentum to the live stream!
+                    best_candidate_->GetVADState()->smoothed_prob = 1.0f;
+                    best_candidate_->UpdateLastVoiceTime();
+
                     arbitration_buffers_.clear(); 
                     best_candidate_->SendStartSignal(); 
                     
@@ -158,7 +188,19 @@ namespace boww {
                 if (silence_ms >= config_.vad_no_voice_ms) {
                     std::cout << "[Group: " << config_.name << "] VAD Timeout (" << silence_ms << "ms). Stopping.\n";
                     
-                    router_.CloseStream();
+                    wav_writer_.CloseAndPublish();
+                    
+                    if (config_.output_type == OutputType::ALSA) {
+                        if (is_live_streaming_) {
+                            alsa_manager_.CloseLiveStream(config_.output_target);
+                            is_live_streaming_ = false;
+                        } else {
+                            std::string dest_wav = server_config_.dest_dir + current_base_filename_ + ".wav";
+                            std::string dest_json = server_config_.dest_dir + current_base_filename_ + ".json";
+                            alsa_manager_.QueueWavFile(config_.output_target, dest_wav, dest_json, current_metadata_);
+                        }
+                    }
+
                     best_candidate_->SendStopSignal();
                     
                     state_ = GroupState::IDLE;

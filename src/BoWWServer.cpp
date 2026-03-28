@@ -22,7 +22,9 @@ namespace boww {
         config_manager_.OnGroupConfigChanged = [this](const GroupConfig& config) {
             std::lock_guard<std::mutex> lock(group_mutex_);
             if (groups_.find(config.name) == groups_.end()) {
-                groups_[config.name] = std::make_shared<GroupController>(config, vad_engine_, debug_mode_);
+                groups_[config.name] = std::make_shared<GroupController>(
+                    config, vad_engine_, config_manager_.GetServerConfig(), alsa_manager_, debug_mode_
+                );
             }
             std::cout << "[Server] Group Config Updated: " << config.name << "\n";
         };
@@ -81,11 +83,8 @@ namespace boww {
 
     void BoWWServer::OnOpen(ConnectionHdl hdl) {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
-
-        // --- UPDATED: Just create the session. Do NOT assign IDs or write to disk yet! ---
         auto session = std::make_shared<ClientSession>(hdl, this);
         sessions_[hdl] = session;
-
         std::cout << "[Server] New WebSocket connection established. Waiting for identity...\n";
     }
 
@@ -124,11 +123,24 @@ namespace boww {
                     if (config_manager_.IsGUIDValid(guid, info)) {
                         session->SetGUID(guid, info.group_name);
                         std::cout << "[Session] Authenticated GUID: " << guid << " in Group: " << info.group_name << "\n";
+                        
+                        // --- NEW: Dynamic Pre-roll Handshake! ---
+                        float preroll = 2.0f;
+                        {
+                            std::lock_guard<std::mutex> lock(group_mutex_);
+                            if (groups_.count(info.group_name)) {
+                                preroll = groups_[info.group_name]->GetConfig().preroll_seconds;
+                            }
+                        }
+                        SendJSON(hdl, {
+                            {"type", Protocol::MSG_HELLO_ACK},
+                            {"preroll_seconds", preroll}
+                        });
+                        
                     } else {
                         std::cout << "[Session] Client sent invalid GUID: " << guid << "\n";
                     }
                 } 
-                // --- UPDATED: Generate Temp ID and write to disk ONLY when enrolled ---
                 else if (type == Protocol::MSG_ENROLL) {
                     
                     std::stringstream ss;

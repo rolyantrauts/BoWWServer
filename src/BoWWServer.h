@@ -14,6 +14,7 @@
 #include "GroupController.h"
 #include "ClientSession.h"
 #include "MDNSService.h"
+#include "AlsaSinkManager.h" // <-- NEW
 
 namespace boww {
 
@@ -22,7 +23,6 @@ namespace boww {
 
     class BoWWServer {
     public:
-        // --- UPDATED CONSTRUCTOR ---
         BoWWServer(std::string config_dir, std::string model_path, bool debug_mode = false);
         ~BoWWServer();
 
@@ -38,8 +38,9 @@ namespace boww {
         ConfigManager config_manager_;
         VADEngine vad_engine_;
         MDNSService mdns_service_;
+        AlsaSinkManager alsa_manager_; // <-- NEW
         
-        std::string config_dir_; // <-- Store the config directory
+        std::string config_dir_; 
         bool debug_mode_; 
         
         std::map<std::string, std::shared_ptr<GroupController>> groups_;
