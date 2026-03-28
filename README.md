@@ -96,6 +96,7 @@ card 2: Loopback [Loopback], device 1: Loopback PCM [Loopback PCM]
   Subdevice #7: subdevice #7
 
   play into plughw:0,0 and audio will be available as a normal mic on hw:0,1
+  use for streaming ASR that want a mic or save to file via clients.yaml settings
   ```
 
 Test Workflow  
