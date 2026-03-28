@@ -60,6 +60,44 @@ You need a 16kHz mono WAV file named jfk-sil.wav in the same directory (or updat
 pip install websockets zeroconf
 python3 test_client_discovery.py
 ```
+
+```
+To install asndloop (linux virtual mic)
+sudo modprobe snd-aloop
+on boot
+echo "snd-aloop" | sudo tee -a /etc/modules
+aplay -l
+**** List of PLAYBACK Hardware Devices ****
+card 0: Device [USB Audio Device], device 0: USB Audio [USB Audio]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: vc4hdmi [vc4-hdmi], device 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 2: Loopback [Loopback], device 0: Loopback PCM [Loopback PCM]
+  Subdevices: 8/8
+  Subdevice #0: subdevice #0
+  Subdevice #1: subdevice #1
+  Subdevice #2: subdevice #2
+  Subdevice #3: subdevice #3
+  Subdevice #4: subdevice #4
+  Subdevice #5: subdevice #5
+  Subdevice #6: subdevice #6
+  Subdevice #7: subdevice #7
+card 2: Loopback [Loopback], device 1: Loopback PCM [Loopback PCM]
+  Subdevices: 8/8
+  Subdevice #0: subdevice #0
+  Subdevice #1: subdevice #1
+  Subdevice #2: subdevice #2
+  Subdevice #3: subdevice #3
+  Subdevice #4: subdevice #4
+  Subdevice #5: subdevice #5
+  Subdevice #6: subdevice #6
+  Subdevice #7: subdevice #7
+
+  play into plughw:0,0 and audio will be available as a normal mic on hw:0,1
+  ```
+
 Test Workflow  
 Discovery: Scans mDNS for _boww._tcp.  
 
